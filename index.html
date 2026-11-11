@@ -1,0 +1,482 @@
+<!DOCTYPE html>
+<html lang="en">
+<!--by Matthew Wu, 11 Nov at No.6 Teaching Building, Tsinghua Univ-->
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>CTDPtool</title>
+<style>
+  :root {
+    --bg: #ffffff;
+    --fg: #202023;
+    --green: #00aa99;
+    --highlight: #cc9900;
+    --bar-bg: #f0f0f5;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d0d14;
+      --fg: #ffffff;
+      --green: #00ffaa;
+      --highlight: #ffcc00;
+      --bar-bg: #1a1a24;
+    }
+  }
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    border-radius: 0;
+    box-shadow: none;
+    font-family: monospace;
+  }
+  html, body { height: 100%; background: var(--bg); color: var(--fg); }
+  body { display: flex; flex-direction: column; }
+  #top { height: 40px; background: var(--bar-bg); flex-shrink: 0; }
+  #main { flex: 1; overflow-y: auto; padding: 8px; }
+  .line { white-space: pre-wrap; word-wrap: break-word; margin-bottom: 2px; }
+  .echo { color: var(--green); }
+  .highlight { color: var(--highlight); font-weight: bold; }
+  #bottom { display: flex; background: var(--bar-bg); flex-shrink: 0; height: 56px; }
+  #prompt { padding: 0 0 0 8px; display: flex; align-items: center; user-select: none; }
+  #cmd { flex: 1; padding: 0 8px; background: transparent; border: none; outline: none; font-family: monospace; font-size: 14px; color: var(--fg); height: 100%; }
+</style>
+</head>
+<body>
+<div id="top"></div>
+<div id="main"></div>
+<div id="bottom">
+  <span id="prompt">&gt;</span>
+  <input id="cmd" type="text" autocomplete="off" spellcheck="false">
+</div>
+<script>
+(function () {
+  'use strict';
+
+  var KEY = 'ctdp_state_v1';
+  var $ = function (id) { return document.getElementById(id); };
+  var main = $('main');
+  var cmd = $('cmd');
+
+  var state = {
+    mode: 'idle',
+    json: null,
+    history: [],
+    countdown: null
+  };
+  var nextId = 1;
+  var countdownTimer = null;
+  var elMap = {};
+
+  // ---------- restore ----------
+  (function load() {
+    var saved = null;
+    try { saved = localStorage.getItem(KEY); } catch (e) {}
+    if (saved) {
+      try {
+        var s = JSON.parse(saved);
+        if (s && typeof s === 'object') {
+          state.mode = typeof s.mode === 'string' ? s.mode : 'idle';
+          state.json = s.json || null;
+          state.history = Array.isArray(s.history) ? s.history : [];
+          state.countdown = s.countdown || null;
+          if (typeof s.nextId === 'number') nextId = s.nextId;
+        }
+      } catch (e) {}
+    } else {
+      try {
+        var old = localStorage.getItem('ctdp_json');
+        if (old) {
+          state.json = JSON.parse(old);
+          localStorage.removeItem('ctdp_json');
+        }
+      } catch (e) {}
+    }
+  })();
+
+  function doSave() {
+    try {
+      localStorage.setItem(KEY, JSON.stringify({
+        mode: state.mode,
+        json: state.json,
+        history: state.history,
+        countdown: state.countdown,
+        nextId: nextId
+      }));
+    } catch (e) {}
+  }
+
+  function todayStr() {
+    var d = new Date();
+    return d.getFullYear() + '-' +
+      String(d.getMonth() + 1).padStart(2, '0') + '-' +
+      String(d.getDate()).padStart(2, '0');
+  }
+
+  // ---------- render ----------
+  function renderLine(line) {
+    var el = document.createElement('div');
+    el.className = 'line' + (line.cls ? ' ' + line.cls : '');
+    el.textContent = line.text;
+    main.appendChild(el);
+    elMap[line.id] = el;
+  }
+
+  function renderHistory() {
+    main.innerHTML = '';
+    elMap = {};
+    for (var i = 0; i < state.history.length; i++) renderLine(state.history[i]);
+    main.scrollTop = main.scrollHeight;
+  }
+
+  function out(text, cls) {
+    var id = nextId++;
+    var line = { id: id, text: text, cls: cls || '' };
+    state.history.push(line);
+    renderLine(line);
+    main.scrollTop = main.scrollHeight;
+    doSave();
+    return id;
+  }
+
+  function echo(text) { out('> ' + text, 'echo'); }
+
+  // 移除指定 id 的行（用于倒计时文本消失）
+  function removeLine(id) {
+    for (var i = 0; i < state.history.length; i++) {
+      if (state.history[i].id === id) {
+        state.history.splice(i, 1);
+        break;
+      }
+    }
+    var el = elMap[id];
+    if (el && el.parentNode) el.parentNode.removeChild(el);
+    delete elMap[id];
+  }
+
+  // ---------- countdown ----------
+  function computeCountdownText() {
+    if (!state.countdown || !state.json) return '';
+    var cd = state.countdown;
+    var remain = Math.max(0, cd.endTime - Date.now());
+    var mm = String(Math.floor(remain / 60000)).padStart(2, '0');
+    var ss = String(Math.floor((remain % 60000) / 1000)).padStart(2, '0');
+    var t = mm + ':' + ss;
+    var j = state.json;
+    if (cd.type === 'sign') {
+      return 'Flare pistol ' + j.signname + ': Sacred seat #' + j.number + ' ' + j.seatname + ' enter in ' + t;
+    }
+    return 'Sacred seat #' + j.number + ' ' + j.seatname + ' leave in ' + t + '\nTask: ' + j.task;
+  }
+
+  function updateCountdownDisplay() {
+    if (!state.countdown) return;
+    var text = computeCountdownText();
+    for (var i = 0; i < state.history.length; i++) {
+      if (state.history[i].id === state.countdown.lineId) {
+        state.history[i].text = text;
+        break;
+      }
+    }
+    var el = elMap[state.countdown.lineId];
+    if (el) el.textContent = text;
+  }
+
+  function tick() {
+    if (!state.countdown) return;
+    if (Date.now() >= state.countdown.endTime) { endCountdown(); return; }
+    updateCountdownDisplay();
+  }
+
+  function startCountdown(type, minutes) {
+    var lineId = out('', 'highlight');
+    state.countdown = { type: type, endTime: Date.now() + minutes * 60 * 1000, lineId: lineId };
+    doSave();
+    updateCountdownDisplay();
+    if (countdownTimer) clearInterval(countdownTimer);
+    countdownTimer = setInterval(tick, 1000);
+  }
+
+  function clearCountdown() {
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+    if (state.countdown) {
+      removeLine(state.countdown.lineId);
+      state.countdown = null;
+    }
+    doSave();
+  }
+
+  function endCountdown() {
+    if (!state.countdown) return;
+    var type = state.countdown.type;
+    clearCountdown();
+    if (type === 'sign') {
+      startReset('sign');
+    } else {
+      var task = state.json ? state.json.task : '';
+      state.mode = 'await-task-y-n';
+      out('Please check the completion status of the task: ' + task + ' (y/n)');
+    }
+  }
+
+  function startReset(type) {
+    var j = state.json;
+    if (!j) return;
+    var today = todayStr();
+    if (type === 'sign') {
+      j.archive += 'Flare pistol ' + j.signname + ' from ' + (j.signStart || today) + ' to ' + today + '\n';
+      state.mode = 'await-name-sign';
+      out('Auxiliary chain reset ;(\nGive the Flare pistol a new name:');
+    } else {
+      j.archive += 'Sacred seat ' + j.seatname + ' up to #' + j.number + ' from ' + (j.seatStart || today) + ' to ' + today + '\n';
+      state.mode = 'await-name-seat';
+      out('Main chain reset ;(\nGive the seat a new name:');
+    }
+  }
+
+  // ---------- parse ----------
+  function parseTimeAndTask(rest) {
+    var parts = rest.split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return { time: null, task: null };
+    if (parts.length === 1) {
+      if (/^\d+$/.test(parts[0])) return { time: parseInt(parts[0], 10), task: null };
+      return { time: null, task: parts[0] };
+    }
+    if (/^\d+$/.test(parts[0])) {
+      return { time: parseInt(parts[0], 10), task: parts.slice(1).join(' ') };
+    }
+    return { time: null, task: parts.join(' ') };
+  }
+
+  // ---------- command ----------
+  function handleSign(text) {
+    if (!state.json) {
+      out('Please import a JSON file! Format: {"signname": "string", "seatname": "string", "number": 1, "task": "string", "archive": "string", "signStart": "YYYY-MM-DD", "seatStart": "YYYY-MM-DD", "rule": "string"}');
+      return;
+    }
+    var p = parseTimeAndTask(text.slice(5).trim());
+    if (p.task !== null) state.json.task = p.task;
+    doSave();
+    startCountdown('sign', p.time !== null ? p.time : 20);
+  }
+
+  function handleSeat(text) {
+    if (!state.countdown || state.countdown.type !== 'sign') {
+      out('No sign countdown in progress.');
+      return;
+    }
+    var p = parseTimeAndTask(text.slice(5).trim());
+    if (p.task !== null && state.json) state.json.task = p.task;
+    
+    if (countdownTimer) { clearInterval(countdownTimer); countdownTimer = null; }
+
+    removeLine(state.countdown.lineId); 
+    var lineId = out('', 'highlight'); 
+
+    state.countdown = { type: 'seat', endTime: Date.now() + (p.time !== null ? p.time : 45) * 60 * 1000, lineId: lineId };
+    doSave();
+    updateCountdownDisplay();
+    countdownTimer = setInterval(tick, 1000);
+  }
+
+  function handleStop() {
+    if (!state.countdown) { out('No countdown in progress.'); return; }
+    var type = state.countdown.type;
+    clearCountdown();
+    startReset(type);
+  }
+
+  function handleDogoitagain() {
+    if (!state.json) { out('No JSON stored.'); return; }
+    state.mode = 'await-rule';
+    out('Please enter the rule you want to add:');
+    doSave();
+  }
+
+  function handleRuleInput(text) {
+    if (state.json) {
+      var d = new Date();
+      var timeStr = d.getFullYear() + '-' +
+        String(d.getMonth() + 1).padStart(2, '0') + '-' +
+        String(d.getDate()).padStart(2, '0') + ' ' +
+        String(d.getHours()).padStart(2, '0') + ':' +
+        String(d.getMinutes()).padStart(2, '0');
+      
+      state.json.rule += timeStr + ' ' + text + '\n';
+    }
+    state.mode = 'idle';
+    doSave();
+    out('Rule\"'+ text + '\" added.');
+  }
+
+  function handleClear() {
+  state.history = [];
+  main.innerHTML = '';
+  elMap = {};
+  }
+
+  if (state.countdown) {
+    var lineId = out('', 'highlight');
+    state.countdown.lineId = lineId; // 更新绑定的 id
+    updateCountdownDisplay();
+  } else {
+    doSave();
+  }
+
+  function handleNameInput(text) {
+    var name = text.trim();
+    if (!name) { out('Please enter a name.'); return; }
+    var type = state.mode === 'await-name-sign' ? 'sign' : 'seat';
+    var today = todayStr();
+    if (type === 'sign') { state.json.signname = name; state.json.signStart = today; }
+    else { state.json.seatname = name; state.json.seatStart = today; }
+    state.mode = 'idle';
+    out('Sacred seat ' + name + ' start on ' + today);
+  }
+
+  function handleTaskYN(text) {
+    var c = text.charAt(0).toLowerCase();
+    if (c === 'y') {
+      var j = state.json;
+      var today = todayStr();
+      j.archive += 'Sacred seat ' + j.seatname + ' up to #' + j.number + ' from ' + (j.seatStart || today) + ' to ' + today + '\n';
+      var nm = j.seatname, num = j.number;
+      j.number += 1;
+      state.mode = 'idle';
+      out('Sacred seat #' + num + ' ' + nm + ' Archived! :D');
+    } else if (c === 'n') {
+      state.mode = 'idle';
+      startReset('seat');
+    } else {
+      out('Please answer y or n.');
+    }
+  }
+  // 通用下载 txt 文件函数
+  function downloadTxt(filename, text) {
+    var blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+    var url = URL.createObjectURL(blob);
+    var a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }
+
+  function handleExportChat() {
+    var inputs = [];
+    for (var i = 0; i < state.history.length; i++) {
+      if (state.history[i].cls === 'echo') {
+        inputs.push(state.history[i].text.replace(/^> /, ''));
+      }
+    }
+    downloadTxt('CTDPtool_chat.txt', inputs.join('\n'));
+  }
+
+  function handleExportJson() {
+    if (!state.json) { out('No JSON stored.'); return; }
+    downloadTxt('CTDPtool_data.json', JSON.stringify(state.json, null, 2));
+  }
+
+  function handleImport() {
+    if (state.json) {
+      state.mode = 'await-import-confirm';
+      out('There is already a JSON text. Sure to replace it? (y/n)');
+    } else {
+      state.mode = 'await-json';
+      out('Please enter JSON text:');
+    }
+  }
+
+  function handleImportConfirm(text) {
+    var c = text.charAt(0).toLowerCase();
+    if (c === 'y') { state.mode = 'await-json'; out('Please enter JSON text:'); }
+    else if (c === 'n') { state.mode = 'idle'; }
+    else out('Please answer y or n.');
+  }
+
+  function handleJsonInput(text) {
+    var fmt = 'Format: {"signname": "string", "seatname": "string", "number": 1, "task": "string", "archive": "string", "signStart": "YYYY-MM-DD", "seatStart": "YYYY-MM-DD", "rule": "string"}';
+    if (text.charAt(0) !== '{') {
+      out('Please enter the correct JSON text! ' + fmt);
+      return;
+    }
+    try {
+      var j = JSON.parse(text);
+      state.json = {
+        signname: typeof j.signname === 'string' ? j.signname : '',
+        seatname: typeof j.seatname === 'string' ? j.seatname : '',
+        number: typeof j.number === 'number' ? j.number : 1,
+        task: typeof j.task === 'string' ? j.task : '',
+        archive: typeof j.archive === 'string' ? j.archive : '',
+        signStart: typeof j.signStart === 'string' ? j.signStart : '',
+        seatStart: typeof j.seatStart === 'string' ? j.seatStart : '',
+        rule: typeof j.rule === 'string' ? j.rule : '' 
+      };
+      state.mode = 'idle';
+      doSave();
+    } catch (e) {
+      out('Please enter the correct JSON text! ' + fmt);
+    }
+  }
+
+  // ---------- handle ----------
+  function submit(raw) {
+    var text = raw.trim();
+    if (!text) return;
+    echo(text);
+
+    if (state.mode === 'await-json') { handleJsonInput(text); return; }
+    if (state.mode === 'await-import-confirm') { handleImportConfirm(text); return; }
+    if (state.mode === 'await-task-y-n') { handleTaskYN(text); return; }
+    if (state.mode === 'await-name-sign' || state.mode === 'await-name-seat') { handleNameInput(text); return; }
+    if (state.mode === 'await-rule') { handleRuleInput(text); return; }
+
+    var first = text.split(/\s+/)[0];
+
+    if (first === '!dogoitagain') { handleDogoitagain(); return; }
+
+    if (state.countdown) {
+      if (first === '!stop') { handleStop(); return; }
+      if (first === '!seat' && state.countdown.type === 'sign') { handleSeat(text); return; }
+      if (first === '!clear') { handleClear(); return; }
+      out('Please complete or stop the countdown!');
+      return;
+    }
+
+    if (first === '!sign') handleSign(text);
+    else if (first === '!seat') handleSeat(text);
+    else if (first === '!stop') handleStop();
+    else if (first === '!clear') handleClear();
+    else if (text === '!export chat') handleExportChat();
+    else if (text === '!export json') handleExportJson();
+    else if (first === '!import') handleImport();
+    else if (first === '!dogoitagain') handleDogoitagain();
+    else if (first.charAt(0) === '!') out('Unknown command.');
+  }
+
+  cmd.addEventListener('keydown', function (e) {
+    if (e.key === 'Enter') {
+      var v = cmd.value;
+      cmd.value = '';
+      submit(v);
+    }
+  });
+  document.addEventListener('click', function () { cmd.focus(); });
+
+  // ---------- startup ----------
+  renderHistory();
+  if (state.countdown) {
+    if (Date.now() >= state.countdown.endTime) {
+      endCountdown();
+    } else {
+      updateCountdownDisplay();
+      countdownTimer = setInterval(tick, 1000);
+    }
+  }
+  cmd.focus();
+})();
+</script>
+</body>
+</html>
