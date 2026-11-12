@@ -21,8 +21,10 @@ Site: <https://ittekngxrokdzxrok.github.io/ctdptool>
 
 ### Workflow
 
-· "Sign" ends → Prompt for a new name for the "Flare pistol"; archive the previous record.
-· "Seat" ends → Prompt to confirm task completion (y/n): 'y' archives the record and increments the counter; 'n' triggers a reset of the main sequence.
+- "Sign" ends → Prompt for a new name for the "Flare pistol"; archive the previous record.
+- "Seat" ends → Prompt to confirm task completion (y/n)
+    - 'y' archives the record and increments the counter;
+    - 'n' triggers a reset of the main sequence.
 
 ### Data Format
 
