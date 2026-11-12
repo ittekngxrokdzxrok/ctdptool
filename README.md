@@ -2,6 +2,8 @@
 
 A minimalist command line tool based on the focus method **CTDP Protocol** by Rednote\@哈里凯恩是冠军
 
+Site: ittekngxrokdzxrok.github.io/ctdptool
+
 ### Quick Start
 
 ### Commands
