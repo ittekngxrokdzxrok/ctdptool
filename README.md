@@ -2,8 +2,6 @@
 
 A minimalist command line tool based on the focus method [**CTDP Protocol** by \@edmond](https://www.zhihu.com/question/19888447/answer/1930799480401293785)
 
-Site: <https://ittekngxrokdzxrok.github.io/ctdptool>
-
 ### Quick Start
 
 ### Commands
